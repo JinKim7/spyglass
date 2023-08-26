@@ -1,0 +1,223 @@
+[config]
+default_to_workspace = false
+reduce_output = false
+skip_git_env_info = true
+
+[env]
+CHANNEL = "${CARGO_MAKE_RUST_CHANNEL}"
+CARGO_MAKE_CRATE_INSTALLATION_LOCKED = true
+CARGO_MAKE_EXTEND_WORKSPACE_MAKEFILE = true
+IS_RELEASE = { default_value = "false", mapping = { "release" = "true" }, source = "${PROFILE}" }
+PLUGINS = "()"
+PLUGINS_DEV_FOLDER = "~/Library/Application Support/com.athlabs.spyglass-dev"
+PROFILE = "${CARGO_MAKE_CARGO_PROFILE}"
+PROFILE_TARGET_NAME = { default_value = "${PROFILE}", mapping = { "dev" = "debug" }, source = "${PROFILE}" }
+RUST_BACKTRACE = 1
+WORKSPACE_TARGET_DIR = "${CARGO_MAKE_CRATE_TARGET_DIRECTORY}"
+
+[tasks.build]
+dependencies = ["build-dev", "build-release"]
+
+[tasks.build-backend]
+args = ["build", "-p", "spyglass", "--profile", "${PROFILE}"]
+dependencies = ["setup"]
+extend = "cargo"
+
+[tasks.build-client]
+args = [
+    "build",
+    "-p",
+    "spyglass-client",
+    "-p",
+    "spyglass-app",
+    "--profile",
+    "${PROFILE}",
+]
+dependencies = ["prepare-backend"]
+extend = "cargo"
+
+[tasks.check]
+args = ["check", "--all"]
+dependencies = ["build-client"]
+
+[tasks.clean]
+args = ["clean", "--all"]
+dependencies = ["set-platform-specific-variables"]
+script = '''rm "${SPYGLASS_BACKEND_TAURI_BIN}"'''
+script_runner = "@shell"
+
+[tasks.clippy]
+args = ["clippy", "--all"]
+
+[tasks.default]
+clear = true
+dependencies = ["clippy", "format"]
+
+[tasks.format]
+args = ["fmt", "--all"]
+
+[tasks.generate-icon]
+args = ["tauri", "icon", "assets/app-icon.png"]
+dependencies = ["setup"]
+extend = "cargo"
+
+[tasks.run]
+dependencies = ["setup", "build-plugins", "build-styles", "prepare-backend"]
+run_task = { fork = true, name = [
+    "run-backend",
+    "run-client",
+], parallel = true }
+
+[tasks.run-backend]
+args = ["run", "-p", "spyglass", "--profile", "${PROFILE}"]
+dependencies = ["build-backend"]
+extend = "cargo"
+
+[tasks.run-client]
+dependencies = ["run-client-dev", "run-client-release"]
+
+[tasks.run-client-headless]
+args = ["serve"]
+command = "trunk"
+cwd = "${SPYGLASS_CLIENT_DIR}"
+dependencies = ["set-platform-specific-variables", "setup", "build-backend"]
+env = { HEADLESS_CLIENT = true }
+
+[tasks.setup]
+dependencies = [
+    "install-client-npm",
+    "install-tauri-cli",
+    "install-trunk",
+    "install-wasm32-unknown",
+    "install-wasm32-wasi",
+]
+[tasks.setup.linux] # Specifically for debian based distros
+install_script = '''
+sudo apt install libwebkit2gtk-4.0-dev \
+    build-essential \
+    curl \
+    wget \
+    libssl-dev \
+    libgtk-3-dev \
+    libayatana-appindicator3-dev \
+    librsvg2-dev
+'''
+
+[tasks.test]
+args = ["test", "--all"]
+dependencies = ["prepare-backend"]
+
+[tasks.test-with-ignored]
+args = ["test", "--workspace", "--", "--include-ignored"]
+extend = "test"
+
+[tasks.upload-debug-symbols-windows]
+script = '''
+cargo +$(CHANNEL) build -p spyglass --profile sentry
+npx sentry-cli difutil check target/sentry/spyglass.exe
+npx sentry-cli upload-dif -o spyglass -p spyglass-server --include-sources target/sentry/spyglass.exe
+mkdir -p crates/tauri/binaries
+cp target/sentry/spyglass.exe crates/tauri/binaries/spyglass-server-x86_64-pc-windows-msvc.exe
+cd crates/client && trunk build
+cargo build -p spyglass-app --profile sentry
+npx sentry-cli difutil check target/sentry/spyglass-app.exe
+npx sentry-cli upload-dif -o spyglass -p spyglass-frontend --include-sources target/sentry/spyglass-app.exe
+'''
+script_runner = "@shell"
+
+###################
+# Private Helpers #
+###################
+
+[tasks.build-dev]
+args = ["tauri", "build"]
+condition = { env_false = ["IS_RELEASE"] }
+dependencies = ["setup", "build-client", "build-plugins", "build-styles"]
+extend = "cargo"
+private = true
+
+[tasks.build-plugins]
+condition = { env_set = ["PLUGIN"] }
+dependencies = ["setup"]
+private = true
+script = '''
+@for plugin in "$(PLUGINS)"; do \
+    echo "-> building $${plugin}"; \
+    mkdir -p "assets/plugins/$${plugin}"; \
+    cargo +${CHANNEL} build -p $$plugin --target wasm32-wasi --$(PROFILE); \
+    cp target/wasm32-wasi/${PROFILE_TARGET_NAME}/$$plugin.wasm assets/plugins/$$plugin/main.wasm; \
+done
+'''
+script_runner = "@shell"
+
+[tasks.build-release]
+args = ["tauri", "build", "--release"]
+condition = { env_true = ["IS_RELEASE"] }
+extend = "build-dev"
+private = true
+
+[tasks.build-styles]
+cwd = "${SPYGLASS_CLIENT_DIR}"
+dependencies = ["set-platform-specific-variables"]
+private = true
+script = "npx tailwindcss -i ./public/input.css -o ./public/main.css"
+script_runner = "@shell"
+
+[tasks.cargo]
+command = "cargo"
+private = true
+toolchain = "${CHANNEL}"
+
+[tasks.install-client-npm]
+cwd = "${SPYGLASS_CLIENT_DIR}"
+dependencies = ["set-platform-specific-variables"]
+private = true
+script = "npm -s install"
+script_runner = "@shell"
+
+[tasks.install-tauri-cli]
+install_crate = "tauri-cli"
+private = true
+
+[tasks.install-trunk]
+install_crate = "trunk"
+private = true
+
+[tasks.install-wasm32-unknown]
+args = ["target", "add", "wasm32-unknown-unknown"]
+command = "rustup"
+private = true
+
+[tasks.install-wasm32-wasi]
+args = ["target", "add", "wasm32-wasi"]
+command = "rustup"
+private = true
+
+[tasks.prepare-backend]
+dependencies = ["set-platform-specific-variables", "build-backend"]
+private = true
+script = '''cp "${SPYGLASS_BACKEND_BIN}" "${SPYGLASS_BACKEND_TAURI_BIN}"'''
+script_runner = "@shell"
+
+[tasks.run-client-dev]
+args = ["tauri", "dev"]
+condition = { env_false = ["IS_RELEASE"] }
+cwd = "${SPYGLASS_TAURI_DIR}"
+dependencies = ["set-platform-specific-variables", "build-client"]
+extend = "cargo"
+private = true
+
+[tasks.run-client-release]
+args = ["tauri", "dev", "--release"]
+condition = { env_true = ["IS_RELEASE"] }
+extend = "run-client-dev"
+private = true
+
+[tasks.set-platform-specific-variables]
+env = { SPYGLASS_BACKEND_BIN = "${WORKSPACE_TARGET_DIR}/${PROFILE_TARGET_NAME}/spyglass", SPYGLASS_CLIENT_DIR = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/crates/client", SPYGLASS_TAURI_DIR = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/crates/tauri", SPYGLASS_TAURI_BINARIES_DIR = "${SPYGLASS_TAURI_DIR}/binaries", SPYGLASS_BACKEND_TAURI_BIN = "${SPYGLASS_TAURI_BINARIES_DIR}/spyglass-server-${CARGO_MAKE_RUST_TARGET_TRIPLE}" }
+private = true
+
+[tasks.set-platform-specific-variables.windows]
+# Only needed for these kinds of path-building, composite environment variables.
+env = { SPYGLASS_BACKEND_BIN = '''${WORKSPACE_TARGET_DIR}\${PROFILE_TARGET_NAME}\spyglass.exe''', SPYGLASS_CLIENT_DIR = '''${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}\crates\client''', SPYGLASS_TAURI_DIR = '''${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}\crates\tauri''', SPYGLASS_TAURI_BINARIES_DIR = '''${SPYGLASS_TAURI_DIR}\binaries''', SPYGLASS_BACKEND_TAURI_BIN = '''${SPYGLASS_TAURI_BINARIES_DIR}\spyglass-server-${CARGO_MAKE_RUST_TARGET_TRIPLE}.exe''' }
+private = true
