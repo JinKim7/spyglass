@@ -112,7 +112,7 @@ run-backend-dev:
 	cargo run -p spyglass
 
 run-client-dev:
-	cargo tauri dev
+	cargo tauri dev --config ./crates/tauri/tauri.dev.conf.json
 
 run-client-headless:
 	cd ./crates/client && HEADLESS_CLIENT=true trunk serve
