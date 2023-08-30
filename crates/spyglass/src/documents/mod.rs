@@ -5,12 +5,12 @@ use entities::{
         indexed_document::{self, find_by_doc_ids},
         tag::{self, TagPair},
     },
-    sea_orm::{ActiveModelTrait, DatabaseConnection},
+    sea_orm::{ActiveModelTrait, DatabaseConnection, QuerySelect},
     BATCH_SIZE,
 };
 use shared::config::LensConfig;
 use spyglass_plugin::TagModification;
-use std::{collections::HashMap, str::FromStr, time::Instant};
+use std::{collections::{HashMap, HashSet}, str::FromStr, time::Instant, ops::Sub};
 
 use libnetrunner::parser::ParseResult;
 use url::Url;
@@ -68,6 +68,33 @@ pub async fn delete_documents_by_uri(state: &AppState, uri: Vec<String>) {
             existing.len()
         );
     }
+}
+
+/// Helper method to reconcile the database with the index
+pub async fn reconcile_with(
+    state: &AppState,
+    master_list: Vec<String>,
+) -> anyhow::Result<(), entities::sea_orm::DbErr> {
+    let master_set = master_list.into_iter().collect::<HashSet<_>>();
+
+    // Get set of all urls in the database
+    // select distinct url from indexed_document
+    let indexed_urls = indexed_document::Entity::find()
+        .column(indexed_document::Column::Url)
+        .distinct()
+        .all(&state.db)
+        .await?;
+
+    let indexed_urls_set = indexed_urls
+        .into_iter()
+        .map(|model| model.url)
+        .collect::<HashSet<_>>();
+
+    // Set difference between master list and indexed urls
+    let to_remove = indexed_urls_set.sub(&master_set).into_iter().collect();
+    delete_documents_by_uri(state, to_remove).await;
+
+    Ok(())
 }
 
 #[derive(Default)]
